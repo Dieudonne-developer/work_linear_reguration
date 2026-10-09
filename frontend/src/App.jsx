@@ -1,7 +1,7 @@
 import { useState } from "react";
 import "./App.css";
 
-const API_URL = "Failed to load resource: net::ERR_CONNECTION_REFUSED";
+const API_URL = "https://work-linear-reguration.onrender.com/";
 
 function App() {
   const [studyHours, setStudyHours] = useState("");
