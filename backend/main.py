@@ -26,24 +26,13 @@ app = FastAPI(
 # ==================================================
 # CORS CONFIGURATION
 # ==================================================
-# These origins allow both local development and
-# the deployed React frontend to communicate with
-# this FastAPI backend.
-#
-# IMPORTANT:
-# Replace the frontend Render URL below with your
-# actual frontend URL if it is different.
-# ==================================================
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://work-linear-reguration-1.onrender.com/",
-
-        # Deployed frontend
-        "https://work-linear-reguration.onrender.com",
+        "https://work-linear-reguration-1.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -57,44 +46,46 @@ app.add_middleware(
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATA_PATH = (
-    BASE_DIR
-    / "data"
-    / "study_hours_exam_scores.csv"
-)
+DATA_PATH = BASE_DIR / "data" / "study_hours_exam_scores.csv"
 
 PASS_MARK = 50
 
 
 def load_dataset():
-    """
-    Load and validate the study hours dataset.
-    """
+    """Load and validate the study hours dataset."""
 
     if not DATA_PATH.exists():
         raise FileNotFoundError(
             f"Dataset not found at: {DATA_PATH}"
         )
 
-    df = pd.read_csv(DATA_PATH)
+    dataset = pd.read_csv(DATA_PATH)
 
-    required_columns = [
-        "Study_Hours",
-        "Exam_Score",
-    ]
+    required_columns = ["Study_Hours", "Exam_Score"]
 
     for column in required_columns:
-        if column not in df.columns:
+        if column not in dataset.columns:
             raise ValueError(
                 f"CSV must contain the column: {column}"
             )
 
-    if df.empty:
-        raise ValueError(
-            "The CSV dataset is empty."
+    if dataset.empty:
+        raise ValueError("The CSV dataset is empty.")
+
+    # Ensure required values are numeric.
+    for column in required_columns:
+        dataset[column] = pd.to_numeric(
+            dataset[column], errors="coerce"
         )
 
-    return df
+    dataset = dataset.dropna(subset=required_columns)
+
+    if dataset.empty:
+        raise ValueError(
+            "The dataset contains no valid numeric rows."
+        )
+
+    return dataset
 
 
 # ==================================================
@@ -103,17 +94,10 @@ def load_dataset():
 
 try:
     df = load_dataset()
-
-    print(
-        f"Dataset loaded successfully: "
-        f"{len(df)} rows"
-    )
+    print(f"Dataset loaded successfully: {len(df)} rows")
 
 except Exception as error:
-    print(
-        f"Dataset error: {error}"
-    )
-
+    print(f"Dataset error: {error}")
     df = pd.DataFrame()
 
 
@@ -125,9 +109,7 @@ class AnalysisRequest(BaseModel):
     study_hours: float = Field(
         ...,
         ge=0,
-        description=(
-            "Number of hours studied by the student"
-        ),
+        description="Number of hours studied by the student",
     )
 
 
@@ -135,26 +117,17 @@ class AnalysisRequest(BaseModel):
 # HELPER FUNCTIONS
 # ==================================================
 
-def get_relationship(
-    r_value: float,
-) -> str:
-    """
-    Convert Pearson correlation value into
-    a human-readable relationship description.
-    """
+def get_relationship(r_value: float) -> str:
+    """Describe the direction and strength of correlation."""
 
     if r_value >= 0.7:
         return "Strong positive relationship"
-
     elif r_value >= 0.3:
         return "Moderate positive relationship"
-
     elif r_value > -0.3:
         return "Weak or no linear relationship"
-
     elif r_value > -0.7:
         return "Moderate negative relationship"
-
     else:
         return "Strong negative relationship"
 
@@ -166,10 +139,7 @@ def get_relationship(
 @app.get("/")
 def root():
     return {
-        "message": (
-            "Correlation vs Linear Regression "
-            "API is running."
-        ),
+        "message": "Correlation vs Linear Regression API is running.",
         "status": "success",
         "docs": "/docs",
     }
@@ -181,7 +151,6 @@ def root():
 
 @app.get("/api/info")
 def get_info():
-
     if df.empty:
         raise HTTPException(
             status_code=500,
@@ -200,14 +169,7 @@ def get_info():
 # ==================================================
 
 @app.post("/api/analyze")
-def analyze(
-    request: AnalysisRequest,
-):
-
-    # ------------------------------------------------
-    # Check dataset
-    # ------------------------------------------------
-
+def analyze(request: AnalysisRequest):
     if df.empty:
         raise HTTPException(
             status_code=500,
@@ -216,96 +178,59 @@ def analyze(
 
     study_hours = request.study_hours
 
-    # ==================================================
-    # CORRELATION
-    # ==================================================
+    # Correlation is calculated from the dataset.
+    x_values = df["Study_Hours"]
+    y_values = df["Exam_Score"]
 
-    correlation, p_value = pearsonr(
-        df["Study_Hours"],
-        df["Exam_Score"],
-    )
+    if len(df) < 2 or x_values.nunique() < 2 or y_values.nunique() < 2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "At least two valid rows with variation "
+                "in study hours and exam scores are required."
+            ),
+        )
 
-    relationship = get_relationship(
-        float(correlation)
-    )
+    correlation, p_value = pearsonr(x_values, y_values)
+    relationship = get_relationship(float(correlation))
 
-    # ==================================================
-    # LINEAR REGRESSION
-    # ==================================================
-
+    # Fit linear regression to the dataset.
     X = df[["Study_Hours"]]
-
     y = df["Exam_Score"]
 
     model = LinearRegression()
-
     model.fit(X, y)
 
-    predicted_score = model.predict(
-        [[study_hours]]
-    )[0]
-
-    slope = model.coef_[0]
-
-    intercept = model.intercept_
-
-    # ==================================================
-    # PASS / FAIL
-    # ==================================================
-
-    result = (
-        "PASS"
-        if predicted_score >= PASS_MARK
-        else "FAIL"
+    predicted_score = float(
+        model.predict(pd.DataFrame({"Study_Hours": [study_hours]}))[0]
     )
 
-    # ==================================================
-    # RESPONSE
-    # ==================================================
+    slope = float(model.coef_[0])
+    intercept = float(model.intercept_)
+
+    # PASS / FAIL classification.
+    result = "PASS" if predicted_score >= PASS_MARK else "FAIL"
 
     return {
-        "study_hours": round(
-            study_hours,
-            2,
-        ),
-
+        "study_hours": round(study_hours, 2),
         "regression": {
-            "predicted_score": round(
-                float(predicted_score),
-                2,
-            ),
-
+            "predicted_score": round(predicted_score, 2),
             "pass_mark": PASS_MARK,
-
             "result": result,
-
             "equation": (
-                "Exam Score = "
-                f"{slope:.2f} × Study Hours + "
-                f"{intercept:.2f}"
+                f"Exam Score = {slope:.2f} × Study Hours "
+                f"+ {intercept:.2f}"
             ),
         },
-
         "correlation": {
-            "pearson_r": round(
-                float(correlation),
-                2,
-            ),
-
-            "p_value": round(
-                float(p_value),
-                4,
-            ),
-
+            "pearson_r": round(float(correlation), 4),
+            "p_value": round(float(p_value), 4),
             "relationship": relationship,
-
             "explanation": (
-                "Correlation measures the strength "
-                "and direction of the relationship "
-                "between study hours and exam scores "
-                "in the dataset. It does not predict "
-                "an individual student's exam score "
-                "or PASS/FAIL result."
+                "Correlation measures the strength and direction "
+                "of the linear relationship between study hours "
+                "and exam scores in the dataset. It does not predict "
+                "an individual student's exam score or PASS/FAIL result."
             ),
         },
     }
